@@ -1,0 +1,31 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "compilerPath": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.4\\bin\\nvcc.exe",
+            "compilerArgs": [
+                "-ccbin",
+                "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64"
+            ],
+            "intelliSenseMode": "windows-msvc-x64",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${workspaceFolder}\\src",
+                "${workspaceFolder}\\external\\include",
+                "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.4\\include",
+                "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.4\\include\\cccl"
+            ],
+            "forcedInclude": [
+                "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.4\\include\\cuda_runtime.h"
+            ],
+            "defines": [
+                "WIN32",
+                "_WINDOWS",
+                "GLEW_STATIC",
+                "THRUST_HOST_SYSTEM=THRUST_HOST_SYSTEM_CPP",
+                "THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CUDA"
+            ]
+        }
+    ],
+    "version": 4
+}

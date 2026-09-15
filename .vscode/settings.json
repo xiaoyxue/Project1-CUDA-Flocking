@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "*.cu": "cuda-cpp",
+        "*.cuh": "cuda-cpp"
+    },
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.default.configurationProvider": "",
+    "clangd.enable": false,
+    "cmake.generator": "Visual Studio 18 2026",
+    "cmake.platform": "x64",
+    "cmake.buildDirectory": "${workspaceFolder}\\build"
+}
