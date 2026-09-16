@@ -30,3 +30,15 @@ CMake copies `shaders` beside the executable and sets Visual Studio's debugger
 working directory to that output directory. Shader paths are relative to the
 working directory; when launching from a terminal, use the executable's directory
 as shown above. Keep the `shaders` directory with the executable when moving it.
+
+### GPU grid initialization tests
+
+`Boids::unitTest()` runs deterministic GPU grid checks before the existing sorting
+printout. Cases cover mixed cells and exact boundaries, a single particle, all
+particles in one cell, a cell spanning CUDA blocks, a cell transition at a block
+boundary, and an empty rebuild. Tests reuse dedicated buffers to check that stale
+cell ranges are cleared without modifying simulation data.
+
+Checks remain enabled in Release builds. Each case prints `[PASS]`; a mismatch
+prints `[FAIL]` with the field, index, expected value, and actual value, then exits
+with failure. Equal-key particle ordering is not assumed for unstable sorting.

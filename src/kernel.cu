@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <iostream>
 #include <vector>
+#include <algorithm>
 
 #include <thrust/sort.h>
 #include <thrust/execution_policy.h>
@@ -220,6 +221,8 @@ void Boids::initSimulation(int N) {
   gridCellEndIndices = std::make_unique<int[]>(gridCellCount);
   pos = std::make_unique<glm::vec3[]>(numObjects);
   cudaMemcpy(pos.get(), dev_pos, numObjects * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+  std::fill(gridCellStartIndices.get(), gridCellStartIndices.get() + gridCellCount, -1);
+  std::fill(gridCellEndIndices.get(), gridCellEndIndices.get() + gridCellCount, -1);
 }
 
 
@@ -514,6 +517,42 @@ void initParticleGridIndicesData(int N, int *particleGridIndices) {
   }
 }
 
+__global__ void kernInitParticleGridIndicesData(int N, int gridSideCount, glm::vec3 gridMinimum, float gridCellWidth, int *dev_particleGridIndices, glm::vec3 *dev_pos) {
+  int particalIndex = (blockIdx.x * blockDim.x) + threadIdx.x;
+  if (particalIndex >= N) {
+    return;
+  }
+  // for (int x = 0; x < gridSideCount; x++) {
+  //   for (int y = 0; y < gridSideCount; y++) {
+  //     for (int z = 0; z < gridSideCount; z++) {
+  //       int gridIndex = gridIndex3Dto1D(x, y, z, gridSideCount);
+  //       if (particalIndex < N) {
+  //         float cellXMininum = gridMinimum.x + x * gridCellWidth;
+  //         float cellYMininum = gridMinimum.y + y * gridCellWidth;
+  //         float cellZMininum = gridMinimum.z + z * gridCellWidth;
+  //         float cellXMaximum = cellXMininum + gridCellWidth;
+  //         float cellYMaximum = cellYMininum + gridCellWidth;
+  //         float cellZMaximum = cellZMininum + gridCellWidth;
+  //         if (dev_pos[particalIndex].x >= cellXMininum && dev_pos[particalIndex].x < cellXMaximum &&
+  //             dev_pos[particalIndex].y >= cellYMininum && dev_pos[particalIndex].y < cellYMaximum &&
+  //             dev_pos[particalIndex].z >= cellZMininum && dev_pos[particalIndex].z < cellZMaximum) {
+  //           // The particle is within this cell
+  //           dev_particleGridIndices[particalIndex] = gridIndex;
+  //         }
+  //       }
+  //     }
+  //   }
+  // }
+  glm::ivec3 gridCell = glm::floor((dev_pos[particalIndex] - gridMinimum) / gridCellWidth);
+  int x = gridCell.x;
+  int y = gridCell.y;
+  int z = gridCell.z;
+  int index = gridIndex3Dto1D(x, y, z, gridSideCount);
+  if (particalIndex < N) {
+    dev_particleGridIndices[particalIndex] = index;
+  }
+}
+
 void initGridStartIndicesData(int N, int *particleArrayIndices, int *particleGridIndices) {
   int *dev_intKeys;
   int *dev_intValues;
@@ -551,6 +590,50 @@ void initGridStartIndicesData(int N, int *particleArrayIndices, int *particleGri
 
   cudaFree(dev_intKeys);
   cudaFree(dev_intValues);
+}
+
+__device__ void computeGridCellStartEndIndicesData(int index, int N, int gridCellCount, int* dev_particleGridIndices, int* dev_gridCellStartIndices, int* dev_gridCellEndIndices) {
+  if (index == 0) {
+    dev_gridCellStartIndices[dev_particleGridIndices[index]] = index;
+  }
+  if (index == N - 1) {
+    dev_gridCellEndIndices[dev_particleGridIndices[index]] = index;
+  }
+  if (index < N - 1 && dev_particleGridIndices[index] != dev_particleGridIndices[index + 1]) {
+    dev_gridCellEndIndices[dev_particleGridIndices[index]] = index;
+    dev_gridCellStartIndices[dev_particleGridIndices[index + 1]] = index + 1;
+  }
+}
+
+__global__ void kernInitGridIndicesData(int N, int gridCellCount, int* dev_particleGridArrayIndices, int* dev_particleGridIndices, int* dev_gridCellStartIndices, int* dev_gridCellEndIndices) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index >= N) {
+    return;
+  }
+  computeGridCellStartEndIndicesData(index, N, gridCellCount, dev_particleGridIndices, dev_gridCellStartIndices, dev_gridCellEndIndices);
+}
+
+void initGridIndicesData(int N, int gridCellCount, int* dev_particleArrayIndices, int* dev_particleGridIndices, int* dev_gridCellStartIndices, int* dev_gridCellEndIndices) {
+  dim3 cellBlocks((gridCellCount + blockSize - 1) / blockSize);
+  kernResetIntBuffer<<<cellBlocks, blockSize>>>(gridCellCount, dev_gridCellStartIndices, -1);
+  checkCUDAErrorWithLine("Reset grid cell start indices failed!");
+  kernResetIntBuffer<<<cellBlocks, blockSize>>>(gridCellCount, dev_gridCellEndIndices, -1);
+  checkCUDAErrorWithLine("Reset grid cell end indices failed!");
+
+  if (N == 0) {
+    return;
+  }
+
+  thrust::device_ptr<int> keys(dev_particleGridIndices);
+  thrust::device_ptr<int> values(dev_particleArrayIndices);
+  thrust::sort_by_key(keys, keys + N, values);
+  checkCUDAErrorWithLine("Sort particle grid indices failed!");
+
+  dim3 particleBlocks((N + blockSize - 1) / blockSize);
+  kernInitGridIndicesData<<<particleBlocks, blockSize>>>(
+      N, gridCellCount, dev_particleArrayIndices, dev_particleGridIndices,
+      dev_gridCellStartIndices, dev_gridCellEndIndices);
+  checkCUDAErrorWithLine("kernInitGridIndicesData failed!");
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
@@ -607,9 +690,131 @@ void Boids::endSimulation() {
   cudaFree(dev_pos);
 
   // TODO-2.1 TODO-2.3 - Free any additional buffers here.
+  cudaFree(dev_particleArrayIndices);
+  cudaFree(dev_particleGridIndices);
+  cudaFree(dev_gridCellStartIndices);
+  cudaFree(dev_gridCellEndIndices);
+}
+
+void testGpuGridInitialization() {
+  const int sideCount = 3;
+  const int cellCount = 27;
+  const int capacity = blockSize + 1;
+  thrust::device_vector<glm::vec3> testPositions(capacity);
+  thrust::device_vector<int> testArrayIndices(capacity);
+  thrust::device_vector<int> testGridIndices(capacity);
+  thrust::device_vector<int> testStarts(cellCount);
+  thrust::device_vector<int> testEnds(cellCount);
+  auto devicePositions = thrust::raw_pointer_cast(testPositions.data());
+  auto deviceArrayIndices = thrust::raw_pointer_cast(testArrayIndices.data());
+  auto deviceGridIndices = thrust::raw_pointer_cast(testGridIndices.data());
+  auto deviceStarts = thrust::raw_pointer_cast(testStarts.data());
+  auto deviceEnds = thrust::raw_pointer_cast(testEnds.data());
+
+  auto checkCuda = [](cudaError_t result, const char *operation) {
+    if (result != cudaSuccess) {
+      std::cerr << "[FAIL] GPU grid tests: " << operation << ": "
+                << cudaGetErrorString(result) << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  };
+
+  auto runCase = [&](const char *name, const std::vector<glm::vec3> &positions,
+                     const std::vector<int> &expectedKeys) {
+    auto expect = [&](const char *field, int index, int expected, int actual) {
+      if (actual != expected) {
+        std::cerr << "[FAIL] " << name << ": " << field << "[" << index
+                  << "] expected " << expected << ", got " << actual << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    };
+    int count = static_cast<int>(positions.size());
+    expect("input size", 0, count, static_cast<int>(expectedKeys.size()));
+    expect("capacity exceeded", 0, 0, count > capacity);
+    std::vector<int> indices(count);
+    std::vector<int> keys(count);
+    if (count > 0) {
+      checkCuda(cudaMemcpy(devicePositions, positions.data(), count * sizeof(glm::vec3),
+                           cudaMemcpyHostToDevice), "upload positions");
+      dim3 blocks((count + blockSize - 1) / blockSize);
+      kernInitParticleArrayIndicesData<<<blocks, blockSize>>>(count, deviceArrayIndices);
+      checkCuda(cudaGetLastError(), "launch array index initialization");
+      kernInitParticleGridIndicesData<<<blocks, blockSize>>>(
+          count, sideCount, glm::vec3(-10.0f), 10.0f, deviceGridIndices, devicePositions);
+      checkCuda(cudaGetLastError(), "launch grid index initialization");
+      checkCuda(cudaDeviceSynchronize(), "initialize grid indices");
+      checkCuda(cudaMemcpy(indices.data(), deviceArrayIndices, count * sizeof(int),
+                           cudaMemcpyDeviceToHost), "read initial array indices");
+      checkCuda(cudaMemcpy(keys.data(), deviceGridIndices, count * sizeof(int),
+                           cudaMemcpyDeviceToHost), "read initial grid indices");
+      for (int i = 0; i < count; ++i) {
+        expect("initial array index", i, i, indices[i]);
+        expect("initial grid index", i, expectedKeys[i], keys[i]);
+      }
+    }
+
+    initGridIndicesData(count, cellCount, deviceArrayIndices, deviceGridIndices,
+                        deviceStarts, deviceEnds);
+    checkCuda(cudaDeviceSynchronize(), "sort and construct cell ranges");
+    if (count > 0) {
+      checkCuda(cudaMemcpy(indices.data(), deviceArrayIndices, count * sizeof(int),
+                           cudaMemcpyDeviceToHost), "read sorted array indices");
+      checkCuda(cudaMemcpy(keys.data(), deviceGridIndices, count * sizeof(int),
+                           cudaMemcpyDeviceToHost), "read sorted grid indices");
+    }
+    std::vector<int> expectedSorted = expectedKeys;
+    std::sort(expectedSorted.begin(), expectedSorted.end());
+    std::vector<int> occurrences(count, 0);
+    for (int i = 0; i < count; ++i) {
+      expect("sorted grid index", i, expectedSorted[i], keys[i]);
+      expect("valid particle index", i, 1, indices[i] >= 0 && indices[i] < count);
+      expect("key/value pairing", i, expectedKeys[indices[i]], keys[i]);
+      ++occurrences[indices[i]];
+    }
+    for (int i = 0; i < count; ++i) {
+      expect("particle occurrences", i, 1, occurrences[i]);
+    }
+
+    std::vector<int> starts(cellCount), ends(cellCount);
+    std::vector<int> expectedStarts(cellCount, -1), expectedEnds(cellCount, -1);
+    for (int i = 0; i < count; ++i) {
+      int cell = expectedSorted[i];
+      if (expectedStarts[cell] == -1) {
+        expectedStarts[cell] = i;
+      }
+      expectedEnds[cell] = i;
+    }
+    checkCuda(cudaMemcpy(starts.data(), deviceStarts, cellCount * sizeof(int),
+                         cudaMemcpyDeviceToHost), "read cell starts");
+    checkCuda(cudaMemcpy(ends.data(), deviceEnds, cellCount * sizeof(int),
+                         cudaMemcpyDeviceToHost), "read cell ends");
+    for (int cell = 0; cell < cellCount; ++cell) {
+      expect("cell start", cell, expectedStarts[cell], starts[cell]);
+      expect("cell end", cell, expectedEnds[cell], ends[cell]);
+    }
+    std::cout << "[PASS] " << name << std::endl;
+  };
+
+  runCase("Mixed cells and exact boundaries",
+          {{5, 5, 5}, {-5, -5, -5}, {15, 15, 15},
+           {1, 2, 3}, {0, -5, -5}, {-10, -10, -10},
+           {-0.001f, -5, -5}, {10, -5, -5}, {-5, 0, -5}, {-5, -5, 0}},
+          {13, 0, 26, 13, 1, 0, 0, 2, 3, 9});
+  runCase("Single particle clears previous cells", {{5, 5, 5}}, {13});
+  runCase("All particles in one cell", std::vector<glm::vec3>(6, glm::vec3(-5)),
+          std::vector<int>(6, 0));
+
+  std::vector<glm::vec3> positions(capacity, glm::vec3(5));
+  std::vector<int> keys(capacity, 13);
+  runCase("One cell spans CUDA blocks", positions, keys);
+  positions.back() = glm::vec3(15);
+  keys.back() = 26;
+  runCase("Cell transition at CUDA block boundary", positions, keys);
+  runCase("Empty rebuild clears all cells", {}, {});
 }
 
 void Boids::unitTest() {
+  testGpuGridInitialization();
   // LOOK-1.2 Feel free to write additional tests here.
 
   // test unstable sort
@@ -670,36 +875,82 @@ void Boids::unitTest() {
   // cudaFree(dev_intKeys);
   // cudaFree(dev_intValues);
   // checkCUDAErrorWithLine("cudaFree failed!");
+
   dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
+  // cpu init version
+  // kernInitParticleArrayIndicesData<<<fullBlocksPerGrid, blockSize>>>(numObjects, dev_particleArrayIndices);
+  // checkCUDAErrorWithLine("kernInitParticleArrayIndicesData failed!");
+
+  // cudaMemcpy(particleArrayIndices.get(), dev_particleArrayIndices, numObjects * sizeof(int), cudaMemcpyDeviceToHost);
+  // checkCUDAErrorWithLine("cudaMemcpy particleArrayIndices failed!");
+
+
+  // initParticleGridIndicesData(numObjects, particleGridIndices.get());
+
+  // std::cout << "Before sorting:" << std::endl;
+  // for(int i = 0; i < numObjects; i++) {
+  //   std::cout << "Particle " << i << ": Grid Index = " << particleGridIndices[i] << ", Array Index = " << particleArrayIndices[i] << " Pos = " << pos[i].x << ", " << pos[i].y << ", " << pos[i].z << std::endl;
+  // }
+
+  // initGridStartIndicesData(numObjects, particleArrayIndices.get(), particleGridIndices.get());
+  // std::cout << "After sorting:" << std::endl;
+  // for(int i = 0; i < numObjects; i++) {
+  //   std::cout << "Particle " << i << ": Grid Index = " << particleGridIndices[i] << ", Array Index = " << particleArrayIndices[i] << std::endl;
+  // }
+  // for (int i = 0; i < gridCellCount; i++) {
+  //   if (gridCellStartIndices[i] == -1 && gridCellEndIndices[i] == -1) {
+  //     continue;
+  //   }
+  //   std::cout << "Grid cell " << i << " starts at " << gridCellStartIndices[i] << " and ends at " << gridCellEndIndices[i] << std::endl;
+  // }
+
+  // gpu init version
   kernInitParticleArrayIndicesData<<<fullBlocksPerGrid, blockSize>>>(numObjects, dev_particleArrayIndices);
-
   checkCUDAErrorWithLine("kernInitParticleArrayIndicesData failed!");
+  kernInitParticleGridIndicesData<<<fullBlocksPerGrid, blockSize>>>(numObjects, gridSideCount, gridMinimum, gridCellWidth, dev_particleGridIndices, dev_pos);
+  checkCUDAErrorWithLine("kernInitParticleGridIndicesData failed!");
+  std::unique_ptr<glm::vec3[]> cpu_pos = std::make_unique<glm::vec3[]>(numObjects);
+  std::unique_ptr<int[]> cpu_particleArrayIndices = std::make_unique<int[]>(numObjects);
+  std::unique_ptr<int[]> cpu_particleGridIndices = std::make_unique<int[]>(numObjects);
+  std::unique_ptr<int[]> cpu_gridCellStartIndices = std::make_unique<int[]>(gridCellCount);
+  std::unique_ptr<int[]> cpu_gridCellEndIndices = std::make_unique<int[]>(gridCellCount);
 
-  cudaMemcpy(particleArrayIndices.get(), dev_particleArrayIndices, numObjects * sizeof(int), cudaMemcpyDeviceToHost);
-  checkCUDAErrorWithLine("cudaMemcpy particleArrayIndices failed!");
+  cudaMemcpy(cpu_pos.get(), dev_pos, numObjects * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+  checkCUDAErrorWithLine("cudaMemcpy GPU test positions failed!");
 
+  auto printGpuIndices = [&](const char *label) {
+    cudaMemcpy(cpu_particleArrayIndices.get(), dev_particleArrayIndices, numObjects * sizeof(int), cudaMemcpyDeviceToHost);
+    checkCUDAErrorWithLine("cudaMemcpy GPU test particle array indices failed!");
+    cudaMemcpy(cpu_particleGridIndices.get(), dev_particleGridIndices, numObjects * sizeof(int), cudaMemcpyDeviceToHost);
+    checkCUDAErrorWithLine("cudaMemcpy GPU test particle grid indices failed!");
 
-  initParticleGridIndicesData(numObjects, particleGridIndices.get());
+    std::cout << label << std::endl;
+    for (int i = 0; i < numObjects; i++) {
+      int particleIndex = cpu_particleArrayIndices[i];
+      const glm::vec3 &position = cpu_pos[particleIndex];
+      std::cout << "Slot " << i << ": Grid Index = " << cpu_particleGridIndices[i]
+                << ", Array Index = " << particleIndex
+                << ", Pos = " << position.x << ", " << position.y << ", " << position.z << std::endl;
+    }
+  };
 
-  std::cout << "Before sorting:" << std::endl;
-  for(int i = 0; i < numObjects; i++) {
-    std::cout << "Particle " << i << ": Grid Index = " << particleGridIndices[i] << ", Array Index = " << particleArrayIndices[i] << " Pos = " << pos[i].x << ", " << pos[i].y << ", " << pos[i].z << std::endl;
+  printGpuIndices("GPU before unstable sort:");
+  initGridIndicesData(numObjects, gridCellCount, dev_particleArrayIndices, dev_particleGridIndices, dev_gridCellStartIndices, dev_gridCellEndIndices);
+  printGpuIndices("GPU after unstable sort:");
+
+  cudaMemcpy(cpu_gridCellStartIndices.get(), dev_gridCellStartIndices, gridCellCount * sizeof(int), cudaMemcpyDeviceToHost);
+  checkCUDAErrorWithLine("cudaMemcpy GPU test grid cell start indices failed!");
+  cudaMemcpy(cpu_gridCellEndIndices.get(), dev_gridCellEndIndices, gridCellCount * sizeof(int), cudaMemcpyDeviceToHost);
+  checkCUDAErrorWithLine("cudaMemcpy GPU test grid cell end indices failed!");
+
+  std::cout << "GPU grid cell ranges (inclusive):" << std::endl;
+  for (int i = 0; i < gridCellCount; i++) {
+    if (cpu_gridCellStartIndices[i] == -1) {
+      continue;
+    }
+    std::cout << "Grid cell " << i << " starts at " << cpu_gridCellStartIndices[i]
+              << " and ends at " << cpu_gridCellEndIndices[i] << std::endl;
   }
-
-
-  initGridStartIndicesData(numObjects, particleArrayIndices.get(), particleGridIndices.get());
-  std::cout << "After sorting:" << std::endl;
-  for(int i = 0; i < numObjects; i++) {
-    std::cout << "Particle " << i << ": Grid Index = " << particleGridIndices[i] << ", Array Index = " << particleArrayIndices[i] << std::endl;
-  }
-  //for(int x = 0; x < gridSideCount; ++x) {
-  //  for (int y = 0; y < gridSideCount; ++y) {
-  //    for (int z = 0; z < gridSideCount; ++z) {
-  //      int gridIndex = cpuGridIndex3Dto1D(x, y, z, gridSideCount);
-  //      std::cout << "Grid Cell " << gridIndex << ": Start Index = " << gridCellStartIndices[gridIndex] << ", End Index = " << gridCellEndIndices[gridIndex] << std::endl;
-  //    }
-  //  } 
-  //}
 
   return;
 }
