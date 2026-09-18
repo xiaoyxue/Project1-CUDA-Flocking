@@ -27,7 +27,7 @@
 #define COHERENT_GRID 0
 
 // LOOK-1.2 - change this to adjust particle count in the simulation
-const int N_FOR_VIS = 10;
+const int N_FOR_VIS = 5000;
 const float DT = 0.2f;
 
 /**
@@ -229,44 +229,44 @@ void initShaders(GLuint * program) {
     Boids::unitTest(); // LOOK-1.2 We run some basic example code to make sure
                        // your CUDA development setup is ready to go.
 
-    // while (!glfwWindowShouldClose(window)) {
-    //   glfwPollEvents();
+    while (!glfwWindowShouldClose(window)) {
+      glfwPollEvents();
 
-    //   frame++;
-    //   double time = glfwGetTime();
+      frame++;
+      double time = glfwGetTime();
 
-    //   if (time - timebase > 1.0) {
-    //     fps = frame / (time - timebase);
-    //     timebase = time;
-    //     frame = 0;
-    //   }
+      if (time - timebase > 1.0) {
+        fps = frame / (time - timebase);
+        timebase = time;
+        frame = 0;
+      }
 
-    //   runCUDA();
+      runCUDA();
 
-    //   std::ostringstream ss;
-    //   ss << "[";
-    //   ss.precision(1);
-    //   ss << std::fixed << fps;
-    //   ss << " fps] " << deviceName;
-    //   glfwSetWindowTitle(window, ss.str().c_str());
+      std::ostringstream ss;
+      ss << "[";
+      ss.precision(1);
+      ss << std::fixed << fps;
+      ss << " fps] " << deviceName;
+      glfwSetWindowTitle(window, ss.str().c_str());
 
-    //   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    //   #if VISUALIZE
-    //   glUseProgram(program[PROG_BOID]);
-    //   glBindVertexArray(boidVAO);
-    //   glPointSize((GLfloat)pointSize);
-    //   glDrawElements(GL_POINTS, N_FOR_VIS + 1, GL_UNSIGNED_INT, 0);
-    //   glPointSize(1.0f);
+      #if VISUALIZE
+      glUseProgram(program[PROG_BOID]);
+      glBindVertexArray(boidVAO);
+      glPointSize((GLfloat)pointSize);
+      glDrawElements(GL_POINTS, N_FOR_VIS + 1, GL_UNSIGNED_INT, 0);
+      glPointSize(1.0f);
 
-    //   glUseProgram(0);
-    //   glBindVertexArray(0);
+      glUseProgram(0);
+      glBindVertexArray(0);
 
-    //   glfwSwapBuffers(window);
-    //   #endif
-    // }
-    // glfwDestroyWindow(window);
-    // glfwTerminate();
+      glfwSwapBuffers(window);
+      #endif
+    }
+    glfwDestroyWindow(window);
+    glfwTerminate();
   }
 
 

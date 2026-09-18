@@ -33,8 +33,10 @@ as shown above. Keep the `shaders` directory with the executable when moving it.
 
 ### GPU grid initialization tests
 
-`Boids::unitTest()` runs deterministic GPU grid checks before the existing sorting
-printout. Cases cover mixed cells and exact boundaries, a single particle, all
+`Boids::unitTest()` runs deterministic GPU grid checks before the simulation loop.
+The tests exercise `kernComputeIndices`, `sortParticlesByGridIndices`, and
+`kernIdentifyCellStartEnd`, resetting all cell ranges with `kernResetIntBuffer`
+before each case. Cases cover mixed cells and exact boundaries, a single particle, all
 particles in one cell, a cell spanning CUDA blocks, a cell transition at a block
 boundary, and an empty rebuild. Tests reuse dedicated buffers to check that stale
 cell ranges are cleared without modifying simulation data.
